@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Badge, Card, Pill } from '../components/ui'
 import { LOCATIONS, mockOpportunities, RESEARCH_FIELDS } from '../data/mockOpportunities'
 import { formatAmount, formatDate } from '../lib/format'
@@ -9,6 +9,7 @@ const TYPE_TABS = [
 ]
 const TYPE_LABEL = { grants: 'Grant', scholarships: 'Scholarship', internships: 'Internship', conferences: 'Conference', fellowships: 'Fellowship' }
 const MATCH_CODES = ['because_saved', 'field_match', 'keyword_match', 'semantic_match', 'type_match']
+const HIDDEN_RECOMMENDATIONS_KEY = 'scholar-hub-demo:hidden-recommendations'
 
 function recBadge(reasons = []) {
   const codes = new Set(reasons.map((reason) => reason.code))
@@ -24,8 +25,39 @@ export default function HomePage() {
   const [field, setField] = useState('')
   const [location, setLocation] = useState('')
   const [showFilters, setShowFilters] = useState(false)
-  const [selected, setSelected] = useState(mockOpportunities[0])
+  const [hiddenRecommendationIds, setHiddenRecommendationIds] = useState(() => {
+    try {
+      const stored = JSON.parse(globalThis.localStorage?.getItem(HIDDEN_RECOMMENDATIONS_KEY) || '[]')
+      const validIds = new Set(mockOpportunities.map((opportunity) => opportunity.internal_id))
+      return new Set(Array.isArray(stored)
+        ? stored.map(Number).filter((id) => Number.isInteger(id) && validIds.has(id))
+        : [])
+    } catch {
+      return new Set()
+    }
+  })
+  const [selected, setSelected] = useState(
+    () => mockOpportunities.find((opportunity) => !hiddenRecommendationIds.has(opportunity.internal_id)) || null,
+  )
   const [showDetailedExplanation, setShowDetailedExplanation] = useState(false)
+  const [hiddenToast, setHiddenToast] = useState(null)
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(
+        HIDDEN_RECOMMENDATIONS_KEY,
+        JSON.stringify([...hiddenRecommendationIds]),
+      )
+    } catch {
+      // The demo remains usable when browser storage is unavailable.
+    }
+  }, [hiddenRecommendationIds])
+
+  useEffect(() => {
+    if (!hiddenToast) return undefined
+    const timer = globalThis.setTimeout(() => setHiddenToast(null), 6000)
+    return () => globalThis.clearTimeout(timer)
+  }, [hiddenToast])
 
   function selectOpportunity(opportunity) {
     setSelected(opportunity)
@@ -35,10 +67,43 @@ export default function HomePage() {
   const filtered = useMemo(() => mockOpportunities.filter((opportunity) => {
     const text = query.trim().toLowerCase()
     return (type === 'all' || opportunity.opp_type === type)
+      && (type !== 'all' || !hiddenRecommendationIds.has(opportunity.internal_id))
       && (!text || `${opportunity.title} ${opportunity.organisation}`.toLowerCase().includes(text))
       && (!field || opportunity.research_field === field)
       && (!location || opportunity.zip_code === location)
-  }), [field, location, query, type])
+  }), [field, hiddenRecommendationIds, location, query, type])
+
+  const allRecommendationsHidden = hiddenRecommendationIds.size === mockOpportunities.length
+
+  function hideRecommendation(opportunity) {
+    setHiddenRecommendationIds((current) => {
+      const next = new Set(current)
+      next.add(opportunity.internal_id)
+      return next
+    })
+    setHiddenToast({ id: opportunity.internal_id, title: opportunity.title })
+    if (selected?.internal_id === opportunity.internal_id) {
+      const nextVisible = filtered.find((item) => item.internal_id !== opportunity.internal_id)
+      setSelected(nextVisible || null)
+      setShowDetailedExplanation(false)
+    }
+  }
+
+  function undoHiddenRecommendation(id) {
+    setHiddenRecommendationIds((current) => {
+      const next = new Set(current)
+      next.delete(id)
+      return next
+    })
+    setHiddenToast(null)
+  }
+
+  function restoreAllRecommendations() {
+    setHiddenRecommendationIds(new Set())
+    setHiddenToast(null)
+    setSelected(mockOpportunities[0])
+    setShowDetailedExplanation(false)
+  }
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
@@ -71,7 +136,24 @@ export default function HomePage() {
             <span className="text-sm text-slate-400">{filtered.length} mock recommendations</span>
           </div>
           <div className="max-h-[calc(100vh-330px)] min-h-96 space-y-3 overflow-y-auto pr-1">
-            {filtered.length ? filtered.map((opportunity) => <OpportunityCard key={opportunity.internal_id} opportunity={opportunity} selected={selected?.internal_id === opportunity.internal_id} onSelect={() => selectOpportunity(opportunity)} />) : <p className="py-12 text-center text-sm text-slate-400">No opportunities match these filters.</p>}
+            {filtered.length ? filtered.map((opportunity) => (
+              <OpportunityCard
+                key={opportunity.internal_id}
+                opportunity={opportunity}
+                selected={selected?.internal_id === opportunity.internal_id}
+                onSelect={() => selectOpportunity(opportunity)}
+                onNotInterested={type === 'all' ? () => hideRecommendation(opportunity) : undefined}
+              />
+            )) : allRecommendationsHidden && type === 'all' ? (
+              <div className="flex min-h-80 flex-col items-center justify-center px-5 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+                  <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" /></svg>
+                </div>
+                <h3 className="mt-4 font-semibold text-slate-900">All recommendations are hidden</h3>
+                <p className="mt-1 max-w-sm text-sm leading-6 text-slate-500">This only affects your local portfolio demo. Other opportunity tabs are unchanged.</p>
+                <button type="button" onClick={restoreAllRecommendations} className="mt-4 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-sm font-semibold text-brand-700 transition hover:bg-brand-100">Restore all recommendations</button>
+              </div>
+            ) : <p className="py-12 text-center text-sm text-slate-400">No opportunities match these filters.</p>}
           </div>
         </Card>
         {selected ? (
@@ -83,6 +165,14 @@ export default function HomePage() {
           />
         ) : <EmptyDetail />}
       </div>
+      {hiddenToast && (
+        <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+          <div className="flex max-w-md items-center gap-3 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg">
+            <span className="truncate">Hidden from My Recommendation · local demo only</span>
+            <button type="button" onClick={() => undoHiddenRecommendation(hiddenToast.id)} className="shrink-0 font-semibold text-brand-300 hover:text-brand-200">Undo</button>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
@@ -103,16 +193,26 @@ function FilterSelect({ label, value, onChange, options, empty }) {
   return <label className="block"><span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-600 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"><option value="">{empty}</option>{options.map((option) => <option key={option}>{option}</option>)}</select></label>
 }
 
-function OpportunityCard({ opportunity, selected, onSelect }) {
+function OpportunityCard({ opportunity, selected, onSelect, onNotInterested }) {
   const badge = recBadge(opportunity.reason)
   return (
-    <button type="button" onClick={onSelect} className={`w-full rounded-xl border p-4 text-left transition ${selected ? 'border-brand-500 bg-brand-50/40 shadow-md ring-1 ring-brand-200' : 'border-slate-200 bg-white shadow-sm hover:border-slate-300 hover:shadow-md'}`}>
-      <div className="mb-2 flex flex-wrap items-center gap-2"><Badge color="brand">{TYPE_LABEL[opportunity.opp_type]}</Badge>{badge && <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.cls}`}>{badge.star && '★'}{badge.label}</span>}</div>
-      <h3 className="font-semibold text-slate-900">{opportunity.title}</h3>
-      <PublisherLine opportunity={opportunity} />
-      <p className="mt-1 text-sm text-slate-500">{formatAmount(opportunity.amount)} · Deadline {formatDate(opportunity.deadline_end)}</p>
-      <div className="mt-2.5 flex flex-wrap gap-1.5">{opportunity.reason.map((reason) => <span key={reason.code} className={`rounded-lg px-2 py-0.5 text-xs font-medium shadow-sm ${reason.code === 'because_saved' ? 'bg-violet-100 text-violet-700' : 'bg-brand-50 text-brand-700'}`}>{reason.text}</span>)}</div>
-    </button>
+    <div className={`relative w-full rounded-xl border text-left transition ${selected ? 'border-brand-500 bg-brand-50/40 shadow-md ring-1 ring-brand-200' : 'border-slate-200 bg-white shadow-sm hover:border-slate-300 hover:shadow-md'}`}>
+      <button type="button" onClick={onSelect} className={`w-full rounded-xl p-4 text-left ${onNotInterested ? 'pr-16' : ''}`}>
+        <div className="mb-2 flex flex-wrap items-center gap-2"><Badge color="brand">{TYPE_LABEL[opportunity.opp_type]}</Badge>{badge && <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.cls}`}>{badge.star && '★'}{badge.label}</span>}</div>
+        <h3 className="font-semibold text-slate-900">{opportunity.title}</h3>
+        <PublisherLine opportunity={opportunity} />
+        <p className="mt-1 text-sm text-slate-500">{formatAmount(opportunity.amount)} · Deadline {formatDate(opportunity.deadline_end)}</p>
+        <div className="mt-2.5 flex flex-wrap gap-1.5">{opportunity.reason.map((reason) => <span key={reason.code} className={`rounded-lg px-2 py-0.5 text-xs font-medium shadow-sm ${reason.code === 'because_saved' ? 'bg-violet-100 text-violet-700' : 'bg-brand-50 text-brand-700'}`}>{reason.text}</span>)}</div>
+      </button>
+      {onNotInterested && (
+        <div className="group absolute bottom-3 right-3">
+          <button type="button" aria-label={`Not interested in ${opportunity.title}`} onClick={onNotInterested} className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-red-300 hover:text-red-600">
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" /></svg>
+          </button>
+          <span role="tooltip" className="pointer-events-none absolute bottom-0 right-full z-20 mr-2 w-64 rounded-md bg-slate-900 px-3 py-2 text-left text-xs font-medium leading-5 text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">Not interested — hide this from My Recommendation.</span>
+        </div>
+      )}
+    </div>
   )
 }
 
